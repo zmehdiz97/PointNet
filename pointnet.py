@@ -27,8 +27,6 @@ import torch.nn.functional as F
 # Import functions to read and write ply files
 from ply import write_ply, read_ply
 
-
-
 class RandomRotation_z(object):
     def __call__(self, pointcloud):
         theta = random.random() * 2. * math.pi
@@ -53,9 +51,80 @@ class ToTensor(object):
     def __call__(self, pointcloud):
         return torch.from_numpy(pointcloud)
 
+class RandomSymmetry(object):
+    """ Apply a random symmetry transformation on the data
+
+    Parameters
+    ----------
+    axis: Tuple[bool,bool,bool], optional
+        axis along which the symmetry is applied
+    """
+
+    def __init__(self, axis=[False, False, False]):
+        self.axis = axis
+
+    def __call__(self, data):
+
+        for i, ax in enumerate(self.axis):
+            if ax:
+                if torch.rand(1) < 0.5:
+                    c_max = np.max(data[:, i])
+                    data[:, i] = c_max - data[:, i]
+        return data
+
+    def __repr__(self):
+        return "Random symmetry of axes: x={}, y={}, z={}".format(*self.axis)
+
+class RandomScaleAnisotropic:
+    r""" Scales node positions by a randomly sampled factor ``s1, s2, s3`` within a
+    given interval, *e.g.*, resulting in the transformation matrix
+
+    .. math::
+        \left[
+        \begin{array}{ccc}
+            s1 & 0 & 0 \\
+            0 & s2 & 0 \\
+            0 & 0 & s3 \\
+        \end{array}
+        \right]
+
+
+    for three-dimensional positions.
+
+    Parameters
+    -----------
+    scales:
+        scaling factor interval, e.g. ``(a, b)``, then scale \
+        is randomly sampled from the range \
+        ``a <=  b``. \
+    """
+
+    def __init__(self, scales=None, anisotropic=True):
+        assert len(scales) == 2
+        assert scales[0] <= scales[1]
+        self.scales = scales
+
+    def __call__(self, data):
+        scale = self.scales[0] + np.random.rand(3) * (self.scales[1] - self.scales[0])
+        data = data * scale
+        return data
+
+    def __repr__(self):
+        return "{}({})".format(self.__class__.__name__, self.scales)
+
 
 def default_transforms():
     return transforms.Compose([RandomRotation_z(),RandomNoise(),ShufflePoints(),ToTensor()])
+
+def custom_transforms():
+    T = transforms.Compose([
+        RandomRotation_z(),
+        RandomNoise(),
+        ShufflePoints(),
+        RandomScaleAnisotropic(scales=(0.8, 1.2)),
+        RandomSymmetry(axis = [True, True, True]),
+        ToTensor()])
+    return T
 
 
 class PointCloudData(Dataset):
@@ -267,7 +336,9 @@ def train(model, device, train_loader, test_loader=None, epochs=250):
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.5)
     loss=0
+    best_acc = 0
     for epoch in range(epochs): 
+        avg_loss = 0
         model.train()
         for i, data in enumerate(train_loader, 0):
             inputs, labels = data['pointcloud'].to(device).float(), data['category'].to(device)
@@ -278,6 +349,7 @@ def train(model, device, train_loader, test_loader=None, epochs=250):
             loss = pointnet_full_loss(outputs, labels, m3x3)
             loss.backward()
             optimizer.step()
+            avg_loss += loss
 
         model.eval()
         correct = total = 0
@@ -285,22 +357,23 @@ def train(model, device, train_loader, test_loader=None, epochs=250):
             with torch.no_grad():
                 for data in test_loader:
                     inputs, labels = data['pointcloud'].to(device).float(), data['category'].to(device)
-                    outputs = model(inputs.transpose(1,2))
-                    #outputs, __ = model(inputs.transpose(1,2))
+                    #outputs = model(inputs.transpose(1,2))
+                    outputs, __ = model(inputs.transpose(1,2))
                     _, predicted = torch.max(outputs.data, 1)
                     total += labels.size(0)
                     correct += (predicted == labels).sum().item()
             val_acc = 100. * correct / total
-            print('Epoch: %d, Loss: %.3f, Test accuracy: %.1f %%' %(epoch+1, loss, val_acc))
-
+            print('Epoch: %d, Loss: %.3f, Test accuracy: %.1f %%' %(epoch+1, avg_loss / i, val_acc))
+            if val_acc > best_acc:
+                torch.save(model.state_dict(), 'PointNetFull.pth')
         scheduler.step()
 
 
 if __name__ == '__main__':
     
     t0 = time.time()
-    
-    train_ds = PointCloudData("../data/ModelNet40_PLY")
+    transform = custom_transforms()
+    train_ds = PointCloudData("../data/ModelNet40_PLY", transform = transform)
     test_ds = PointCloudData("../data/ModelNet40_PLY", folder='test')
 
     inv_classes = {i: cat for cat, i in train_ds.classes.items()}
