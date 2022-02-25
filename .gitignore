@@ -5,3 +5,5 @@
 *.zip
 results
 run.sh
+*.pt
+*.pth
