@@ -12,20 +12,23 @@
 #
 
 from typing import OrderedDict
+import argparse
 import numpy as np
 import random
 import math
 import os
 import time
+import datetime
 import torch
 import scipy.spatial.distance
 from torch.utils.data import Dataset, DataLoader
-from torchvision import transforms, utils
+from torchvision import transforms
 import torch.nn as nn
 import torch.nn.functional as F
 
 # Import functions to read and write ply files
 from ply import write_ply, read_ply
+from utils import Logger
 
 class RandomRotation_z(object):
     def __call__(self, pointcloud):
@@ -332,7 +335,7 @@ def pointnet_full_loss(outputs, labels, m3x3, alpha = 0.001):
 
 
 
-def train(model, device, train_loader, test_loader=None, epochs=250):
+def train(model, logger, args, device, train_loader, test_loader=None, epochs=250, save_path=None):
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.5)
     loss=0
@@ -343,10 +346,13 @@ def train(model, device, train_loader, test_loader=None, epochs=250):
         for i, data in enumerate(train_loader, 0):
             inputs, labels = data['pointcloud'].to(device).float(), data['category'].to(device)
             optimizer.zero_grad()
-            #outputs = model(inputs.transpose(1,2))
-            outputs, m3x3 = model(inputs.transpose(1,2))
-            #loss = basic_loss(outputs, labels)
-            loss = pointnet_full_loss(outputs, labels, m3x3)
+            if args.model == 'PointNetFull':
+                outputs, m3x3 = model(inputs.transpose(1,2))
+                loss = pointnet_full_loss(outputs, labels, m3x3)
+
+            else:
+                outputs = model(inputs.transpose(1,2))
+                loss = basic_loss(outputs, labels)
             loss.backward()
             optimizer.step()
             avg_loss += loss
@@ -357,48 +363,68 @@ def train(model, device, train_loader, test_loader=None, epochs=250):
             with torch.no_grad():
                 for data in test_loader:
                     inputs, labels = data['pointcloud'].to(device).float(), data['category'].to(device)
-                    #outputs = model(inputs.transpose(1,2))
-                    outputs, __ = model(inputs.transpose(1,2))
+                    if args.model == 'PointNetFull':
+                        outputs, __ = model(inputs.transpose(1,2))
+                    else:
+                        outputs = model(inputs.transpose(1,2))
                     _, predicted = torch.max(outputs.data, 1)
                     total += labels.size(0)
                     correct += (predicted == labels).sum().item()
             val_acc = 100. * correct / total
-            print('Epoch: %d, Loss: %.3f, Test accuracy: %.1f %%' %(epoch+1, avg_loss / i, val_acc))
-            if val_acc > best_acc:
-                torch.save(model.state_dict(), 'PointNetFull.pth')
+            logger.print_and_write('Epoch: %d, Loss: %.3f, Test accuracy: %.1f %%' %(epoch+1, avg_loss / i, val_acc))
+            if val_acc > best_acc and save_path is not None:
+                torch.save(model.state_dict(), save_path)
         scheduler.step()
 
 
 if __name__ == '__main__':
+
+    # PARSER TO ADD OPTIONS
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model",  choices=["PointMLP", "PointNetBasic", "PointNetFull"], default="PointNetFull")
+    parser.add_argument("--aug",  choices=["default", "custom"], default="default")
+    parser.add_argument("--epochs", type=int, default=250)
+    args = parser.parse_args()
     
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu") 
+    experiment_time = str(datetime.datetime.now())
+    logger = Logger(experiment_time)
+
+    logger.print_and_write(f'Using device {device} \n')
+
     t0 = time.time()
-    transform = custom_transforms()
-    train_ds = PointCloudData("../data/ModelNet40_PLY", transform = transform)
-    test_ds = PointCloudData("../data/ModelNet40_PLY", folder='test')
+    if args.aug == 'custom':
+        transform = custom_transforms()
+    else:
+        transform = default_transforms()
+
+    train_ds = PointCloudData("ModelNet40_PLY", transform = transform)
+    test_ds = PointCloudData("ModelNet40_PLY", folder='test')
 
     inv_classes = {i: cat for cat, i in train_ds.classes.items()}
-    print("Classes: ", inv_classes)
-    print('Train dataset size: ', len(train_ds))
-    print('Test dataset size: ', len(test_ds))
-    print('Number of classes: ', len(train_ds.classes))
-    print('Sample pointcloud shape: ', train_ds[0]['pointcloud'].size())
+    logger.print_and_write(f"Classes: {inv_classes} \n")
+    logger.print_and_write(f"Train dataset size: {len(train_ds)} \n")
+    logger.print_and_write(f"Test dataset size: {len(test_ds)} \n")
+    logger.print_and_write(f"Number of classes: {len(train_ds.classes)} \n")
+    logger.print_and_write(f"Sample pointcloud shape: {train_ds[0]['pointcloud'].size()} \n")
 
     train_loader = DataLoader(dataset=train_ds, batch_size=32, shuffle=True)
     test_loader = DataLoader(dataset=test_ds, batch_size=32)
+    if args.model == 'PointMLP':
+        model = PointMLP()
+    elif args.model == 'PointNetBasic':
+        model = PointNetBasic()
+    else:
+        model = PointNetFull()
 
-    #model = PointMLP()
-    #model = PointNetBasic()
-    model = PointNetFull()
-    print(str(model))
+    logger.print_and_write(f'Training model {args.model} \n')
     model_parameters = filter(lambda p: p.requires_grad, model.parameters())
-    print("Number of parameters in the Neural Networks: ", sum([np.prod(p.size()) for p in model_parameters]))
+    logger.print_and_write(f"Number of parameters in the Neural Networks: {sum([np.prod(p.size()) for p in model_parameters])} \n")
 
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu") 
-    print("Device: ", device)
     model.to(device);
 
-    train(model, device, train_loader, test_loader, epochs = 250)
+    train(model, logger, args, device, train_loader, test_loader, epochs = args.epochs, save_path=os.path.join(logger.logdir,args.model+'.pth'))
     
-    print("Total time for training : ", time.time()-t0)
+    logger.print_and_write(f"Total time for training : {time.time()-t0} \n")
 
 
