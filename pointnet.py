@@ -384,6 +384,7 @@ if __name__ == '__main__':
     parser.add_argument("--model",  choices=["PointMLP", "PointNetBasic", "PointNetFull"], default="PointNetFull")
     parser.add_argument("--aug",  choices=["default", "custom"], default="default")
     parser.add_argument("--epochs", type=int, default=250)
+    parser.add_argument("--resume_from")
     args = parser.parse_args()
     
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu") 
@@ -398,8 +399,8 @@ if __name__ == '__main__':
     else:
         transform = default_transforms()
 
-    train_ds = PointCloudData("ModelNet40_PLY", transform = transform)
-    test_ds = PointCloudData("ModelNet40_PLY", folder='test')
+    train_ds = PointCloudData("../data/ModelNet40_PLY", transform = transform)
+    test_ds = PointCloudData("../data/ModelNet40_PLY", folder='test')
 
     inv_classes = {i: cat for cat, i in train_ds.classes.items()}
     logger.print_and_write(f"Classes: {inv_classes} \n")
@@ -416,7 +417,8 @@ if __name__ == '__main__':
         model = PointNetBasic()
     else:
         model = PointNetFull()
-
+    if args.resume_from is not None:
+        model.load_state_dict(torch.load(args.resume_from))
     logger.print_and_write(f'Training model {args.model} \n')
     model_parameters = filter(lambda p: p.requires_grad, model.parameters())
     logger.print_and_write(f"Number of parameters in the Neural Networks: {sum([np.prod(p.size()) for p in model_parameters])} \n")
