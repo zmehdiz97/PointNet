@@ -63,16 +63,14 @@ class RandomSymmetry(object):
         axis along which the symmetry is applied
     """
 
-    def __init__(self, axis=[False, False, False]):
-        self.axis = axis
-
+    def __init__(self):
+        pass
     def __call__(self, data):
 
-        for i, ax in enumerate(self.axis):
-            if ax:
-                if torch.rand(1) < 0.5:
-                    c_max = np.max(data[:, i])
-                    data[:, i] = c_max - data[:, i]
+        i = random.randint(0,2)
+        if torch.rand(1) < 0.5:
+            c_max = np.max(data[:, i])
+            data[:, i] = c_max - data[:, i]
         return data
 
     def __repr__(self):
@@ -124,8 +122,8 @@ def custom_transforms():
         RandomRotation_z(),
         RandomNoise(),
         ShufflePoints(),
-        RandomScaleAnisotropic(scales=(0.8, 1.2)),
-        RandomSymmetry(axis = [True, True, True]),
+        RandomScaleAnisotropic(scales=(0.85, 1.15)),
+        RandomSymmetry(),
         ToTensor()])
     return T
 
